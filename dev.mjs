@@ -2,7 +2,7 @@
 import {createServer} from 'node:http';
 import {readFile} from 'node:fs/promises';
 import {endpoint,protectedHeaders} from './server.mjs';
-const assets={'/':'index.html','/style.css':'style.css','/app.mjs':'app.mjs','/domain.mjs':'domain.mjs','/seed.mjs':'seed.mjs'};
+const assets={'/':'index.html','/style.css':'style.css','/app.mjs':'app.mjs','/domain.mjs':'domain.mjs','/seed.mjs':'seed.mjs','/workspaces.mjs':'workspaces.mjs','/seed-workspaces.mjs':'seed-workspaces.mjs','/preview-entitas':'preview-entitas.html','/preview-entitas.css':'preview-entitas.css'};
 const server=createServer(async(req,res)=>{
  try{
   const url=new URL(req.url,'http://127.0.0.1:'+(process.env.PORT||4173));let response;

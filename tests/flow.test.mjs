@@ -141,3 +141,57 @@ test('Dua perubahan simultan tersimpan tanpa saling menimpa',async()=>{
  const response=await api(env,'state','root','owner@example.com');
  assert.deepEqual((await response.json()).projects.map(p=>p.name).sort(),['Proyek A','Proyek B']);
 });
+
+
+test('Workspace membatasi proyek, biaya, peran, dan gaji untuk satu akun',async()=>{
+ const env={DB:memoryDb(),OWNER_EMAIL:'owner@example.com'};
+ const owner=(id,action,data)=>api(env,'action?workspace='+id,'root','owner@example.com',{action,data});
+ const staff=(id,payload)=>api(env,(payload?'action':'state')+'?workspace='+id,'staff','a@example.com',payload);
+ const b='bstudio',m='matte-magic',o='omera-cinema';
+ const add=(role,salary)=>({name:'Ari',email:'a@example.com',role,salary});
+ assert.equal((await owner(b,'member.save',add('employee',4000000))).status,200);
+ assert.equal((await owner(m,'member.save',add('employee',3200000))).status,200);
+ assert.equal((await staff(o)).status,403);
+ assert.equal((await staff(o,{action:'attendance.clock',data:{mode:'in'}})).status,403);
+ const role=await (await staff(b)).json();
+ assert.deepEqual(role.workspaces.map(a=>a.id),[b,m]);
+ assert.equal(role.payroll[0].base,4000000);
+ assert.deepEqual(role.ownerFinance,[]);
+ assert.equal((await (await staff(m)).json()).payroll[0].base,3200000);
+ assert.equal((await staff(b,{action:'attendance.clock',data:{mode:'in'}})).status,200);
+ assert.equal((await (await staff(m)).json()).attendance.length,0);
+ const project={name:'Kampanye Motion',type:'Motion'};
+ assert.equal((await owner(b,'project.save',project)).status,400);
+ const created=await (await owner(m,'project.save',project)).json();
+ assert.equal(created.projects[0].name,'Kampanye Motion');
+ assert.equal((await (await api(env,'state?workspace='+b,'root','owner@example.com')).json()).projects.length,0);
+ const txn={title:'DP',date:dayOf(new Date()),amount:50000,type:'in',status:'paid',category:'Pembayaran klien',projectId:created.projects[0].id};
+ assert.equal((await owner(b,'cash.save',txn)).status,404);
+ assert.equal((await owner(m,'cash.save',txn)).status,200);
+ const all=await (await api(env,'state?workspace='+b,'root','owner@example.com')).json();
+ assert.deepEqual(all.ownerFinance.map(a=>a.incoming),[0,50000,0]);
+ assert.deepEqual(all.cash,[]);
+ assert.equal((await owner(o,'member.save',add('finance'))).status,200);
+ const finance=await (await staff(o)).json();
+ assert.equal(finance.actor.role,'finance');
+ assert.deepEqual(finance.ownerFinance,[]);
+ assert.deepEqual(finance.payroll,[]);
+});
+
+test('Migrasi snapshot menjaga data lama di Bstudio dan membuat workspace baru kosong',async()=>{
+ const DB=memoryDb(),env={DB,OWNER_EMAIL:'owner@example.com'};
+ const initial=studio();
+ await DB.batch([
+  DB.prepare('insert into studio_state(id,version) values(1,?)').bind('legacy'),
+  DB.prepare('insert into studio_chunk(version,part,data) values(?,?,?)').bind('legacy',0,JSON.stringify(initial))
+ ]);
+ const b=await (await api(env,'state?workspace=bstudio','old-owner','owner@example.com')).json();
+ const m=await (await api(env,'state?workspace=matte-magic','old-owner','owner@example.com')).json();
+ assert.deepEqual(b.projects,initial.projects);
+ assert.deepEqual(b.cash,initial.cash);
+ assert.deepEqual(m.projects,[]);
+ assert.deepEqual(m.payroll,[]);
+ assert.deepEqual(m.workspaces.map(a=>a.id),['bstudio','matte-magic','omera-cinema']);
+ const old=await (await api(env,'state?workspace=bstudio&period=2026-10','old-owner','owner@example.com')).json();
+ assert.deepEqual(old.payroll.find(p=>p.employeeId==='ari'),initial.slips[0]);
+});

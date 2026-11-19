@@ -1,11 +1,13 @@
 
-import {apply,scope,dayOf,money,safeLink,statuses,types,roles} from './domain.mjs';
-import {sample} from './seed.mjs';
+import {apply,dayOf,money,safeLink,statuses,roles} from './domain.mjs';
+import {demoWorkspaceState} from './seed-workspaces.mjs';
+import {memberships,selectWorkspace,workspaceView,assertWorkspaceProjectType,cashTotals} from './workspaces.mjs';
 const root=document.querySelector('#app'), modal=document.querySelector('#dialog'), notice=document.querySelector('#notice');
 const labels={owner:'Owner',production:'Admin Produksi',payroll:'Admin Payroll',finance:'Admin Keuangan',employee:'Karyawan',viewer:'Viewer'};
 const allNav={today:'Hari Ini',tasks:'Tugas Saya',clock:'Absensi',salary:'Gaji',projects:'Proyek',review:'Antrean Review',attendance:'Absensi',payroll:'Payroll',finance:'Keuangan',kpi:'Pengaturan KPI',team:'Akses Tim'};
 const navFor={owner:['projects','review','attendance','payroll','finance','kpi','team'],production:['projects','review'],payroll:['attendance','payroll','kpi'],finance:['finance'],employee:['today','tasks','clock','salary'],viewer:['projects']};
 const metricNames={vfx:'Poin VFX lolos QC','on-time':'Jumlah tugas lolos QC tepat waktu',completed:'Jumlah tugas lolos QC'};
+let activeWorkspace=new URLSearchParams(location.search).get('workspace')??'';
 let state,mode,db,demoUser='numan',period=dayOf(new Date()).slice(0,7),busy=false,toastTimer,drawSerial=0;
 let selectedProject='',selectedReview='',projectTab='tasks',searchText='',taskStatus='',taskType='',taskPic='',cashProject='',cashCategory='',cashStatus='',showArchived=false,selectedRule='';
 const dateLabel=date=>date?new Intl.DateTimeFormat('id-ID',{day:'numeric',month:'short',timeZone:'Asia/Jakarta'}).format(new Date(date.length===10?date+'T12:00:00+07:00':date)):'–';
@@ -13,7 +15,8 @@ const timeLabel=date=>date?new Intl.DateTimeFormat('id-ID',{hour:'2-digit',minut
 const monthLabel=value=>new Intl.DateTimeFormat('id-ID',{month:'long',year:'numeric',timeZone:'Asia/Jakarta'}).format(new Date(value+'-01T12:00:00+07:00'));
 const e=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const absent=(label)=>'<p class="empty">'+e(label)+'</p>';
-const brand='<span class="brand"><span class="mark" aria-hidden="true">B</span>Bstudio</span>';
+const brand='<span class="brand">Ruang kerja studio</span>';
+const projectTypes=()=>[...new Set([...state.workspace.projectTypes,...state.projects.map(p=>p.type)])];
 const btn=(label,action,id='',primary=false)=>'<button type="button" class="'+(primary?'primary':'')+'" data-action="'+e(action)+'" data-id="'+e(id)+'">'+e(label)+'</button>';
 const jump=(label,route,primary=false)=>'<a class="button '+(primary?'primary':'')+'" href="#'+e(route)+'">'+e(label)+'</a>';
 const external=(url,label)=>safeLink(url)?'<a href="'+e(safeLink(url))+'" target="_blank" rel="noopener noreferrer">'+e(label)+'</a>':'';
@@ -42,29 +45,68 @@ async function remote(path,init){
  if(!response.ok)throw Object.assign(new Error(value.error||'Permintaan gagal.'),{status:response.status});
  return value;
 }
-const calculate=()=>scope(db,demoUser,period,dayOf(new Date()));
-async function refresh(forceFocus=false){
+
+const params=()=>new URLSearchParams({period,...(activeWorkspace?{workspace:activeWorkspace}:{})});
+function rememberWorkspace(id,resetRoute){
+ const url=new URL(location.href);
+ url.searchParams.set('workspace',id);
+ if(resetRoute)url.hash=home();
+ history.replaceState(null,'',url);
+}
+function clearWorkspaceFilters(){
+ selectedProject='';selectedReview='';projectTab='tasks';searchText='';taskPic='';taskType='';taskStatus='';
+ cashProject='';cashCategory='';cashStatus='';showArchived=false;selectedRule='';
+}
+const demoAccess=()=>memberships(db,people=>people.find(p=>p.id===demoUser&&p.active));
+const calculate=()=>{
+ const access=demoAccess();
+ const preferred=access.some(a=>a.workspace.id===activeWorkspace)?activeWorkspace:'';
+ return workspaceView(access,selectWorkspace(access,preferred),period,dayOf(new Date()));
+};
+async function refresh(forceFocus=false,resetRoute=false){
  const serial=++drawSerial;
  try{
-  const next=mode==='demo'?calculate():await remote('/api/state?period='+encodeURIComponent(period));
-  if(serial!==drawSerial)return;state=next;render(forceFocus);
+  let next;
+  if(mode==='demo')next=calculate();
+  else{
+   try{next=await remote('/api/state?'+params());}
+   catch(error){
+    if(!activeWorkspace||![403,404].includes(error.status))throw error;
+    next=await remote('/api/state?'+new URLSearchParams({period}));
+    resetRoute=true;
+   }
+  }
+  if(serial!==drawSerial)return;
+  state=next;
+  activeWorkspace=state.workspace.id;
+  rememberWorkspace(activeWorkspace,resetRoute);
+  render(forceFocus);
  }catch(err){if(serial===drawSerial)failure(err);}
+}
+function switchContext(){
+ clearWorkspaceFilters();
+ state=null;
+ notice.textContent='';
+ root.innerHTML='<main id="content" tabindex="-1" aria-busy="true"><p role="status">Memuat ruang kerja…</p></main>';
+ refresh(true,true);
 }
 function failure(error){
  root.innerHTML='<main id="content" tabindex="-1" class="stack">'+brand+title('Akses ruang kerja',error.message)+(error.status===401?'<a class="button primary" href="/signin-with-chatgpt?return_to=%2F" target="_top">Masuk dengan ChatGPT</a>':btn('Coba lagi','retry'))+'</main>';
 }
 async function mutate(action,data){
- if(busy)return;busy=true;
+ if(busy||!state)return;busy=true;++drawSerial;
  const submit=modal.querySelector('[type=submit]');
  if(submit)submit.disabled=true;
  try{
   if(mode==='demo'){
    const draft=structuredClone(db);
-   apply(draft,demoUser,action,data);
+   const current=selectWorkspace(memberships(draft,people=>people.find(p=>p.id===demoUser&&p.active)),activeWorkspace);
+   assertWorkspaceProjectType(current,action,data);
+   apply(current.store,demoUser,action,data);
    db=draft;
-   try{sessionStorage.setItem('bstudio-demo-v1',JSON.stringify(db));}catch{}
+   try{sessionStorage.setItem('bstudio-demo-v2',JSON.stringify(db));}catch{}
    state=calculate();
-  }else state=await remote('/api/action?period='+encodeURIComponent(period),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action,data})});
+  }else state=await remote('/api/action?'+params(),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action,data})});
   if(modal.open)modal.close();
   render();tell('Perubahan tersimpan.');
  }catch(err){
@@ -78,8 +120,9 @@ function render(focus=false){
  const key=visible.includes(screen)?screen:home();
  const nav=className=>'<nav class="'+className+'" aria-label="Navigasi utama">'+visible.map(v=>'<a href="#'+v+'"'+(key===v?' aria-current="page"':'')+'>'+e(allNav[v])+'</a>').join('')+'</nav>';
  const views={today:todayView,tasks:()=>id?taskView(id):tasksView(),clock:clockView,salary:salaryView,projects:()=>id==='task'?taskView(route()[2]):projectsView(id),review:reviewView,attendance:attendanceView,payroll:payrollView,finance:financeView,kpi:kpiView,team:teamView};
- const roleSelect=mode==='demo'?'<span class="demo">Preview</span><select aria-label="Ganti akun contoh" data-filter="demoUser">'+db.people.filter(p=>p.active).map(p=>option(p.id,p.name+' / '+labels[p.role],demoUser)).join('')+'</select>':'<span class="role-name">'+e(state.actor.name)+' / '+e(labels[role()])+'</span><a href="/signout-with-chatgpt?return_to=%2F" target="_top">Keluar</a>';
- root.innerHTML='<div class="layout"><aside class="rail">'+brand+nav('rail-nav')+(mode==='demo'?'<div class="foot">Data contoh</div>':'')+'</aside><div><header class="top">'+brand+'<span class="location">'+e(allNav[key])+'</span><div class="user">'+roleSelect+'</div></header><main id="content" tabindex="-1">'+views[key]()+'</main>'+nav('bottom')+'</div></div>';
+ const workspacePicker='<label class="workspace-picker"><span>Entitas</span><select aria-label="Pilih entitas bisnis" data-filter="workspace">'+state.workspaces.map(w=>option(w.id,w.name,activeWorkspace)).join('')+'</select></label>';
+ const roleSelect=mode==='demo'?'<span class="demo">Preview</span><select aria-label="Ganti akun contoh" data-filter="demoUser">'+db.entities[activeWorkspace].people.filter(p=>p.active).map(p=>option(p.id,p.name+' / '+labels[p.role],demoUser)).join('')+'</select>':'<span class="role-name">'+e(state.actor.name)+' / '+e(labels[role()])+'</span><a href="/signout-with-chatgpt?return_to=%2F" target="_top">Keluar</a>';
+ root.innerHTML='<div class="layout" data-workspace="'+e(activeWorkspace)+'"><aside class="rail"><div class="desktop-workspace">'+workspacePicker+'</div>'+nav('rail-nav')+(mode==='demo'?'<div class="foot">Data contoh</div>':'')+'</aside><div><header class="top"><div class="mobile-workspace">'+workspacePicker+'</div><span class="location">'+e(state.workspace.name+' / '+allNav[key])+'</span><div class="user">'+roleSelect+'</div></header><main id="content" tabindex="-1">'+views[key]()+'</main>'+nav('bottom')+'</div></div>';
  if(focus)document.querySelector('#content').focus();
 }
 function taskCards(tasks,base){
@@ -93,7 +136,7 @@ function attendanceHero(){
 }
 function todayView(){
  const tasks=state.tasks.filter(t=>!['Lolos QC','Terkirim','Siap Review'].includes(t.status)).sort((a,b)=>a.deadline.localeCompare(b.deadline)).slice(0,4);
- return title('Hari Ini','Pekerjaan dan absensi '+state.actor.name)+
+ return title('Hari Ini',state.workspace.name+' · '+state.actor.name)+
  '<div class="stack">'+attendanceHero()+'<div class="row between"><h2>Perlu tindakan</h2>'+jump('Lihat Tugas Saya','tasks')+'</div>'+taskCards(tasks,'tasks/')+'</div>';
 }
 function filters(tasks){
@@ -102,7 +145,7 @@ function filters(tasks){
 function taskFilters(admin=false){
  const statusOptions=[['','Semua status'],...statuses.map(v=>[v,v])];
  return '<div class="bar">'+input('Cari tugas','search',searchText,'search','data-filter="search" placeholder="Judul atau kode shot"')+
- select('Status','status',statusOptions,taskStatus,'data-filter="taskStatus"')+select('Jenis','type',[['','Semua jenis'],...types.map(v=>[v,v])],taskType,'data-filter="taskType"')+
+ select('Status','status',statusOptions,taskStatus,'data-filter="taskStatus"')+select('Jenis','type',[['','Semua jenis'],...projectTypes().map(v=>[v,v])],taskType,'data-filter="taskType"')+
  (admin?select('PIC','pic',[['','Semua PIC'],...state.people.filter(p=>p.role==='employee').map(p=>[p.id,p.name])],taskPic,'data-filter="taskPic"'):'')+'</div>';
 }
 function tasksView(){return title('Tugas Saya')+taskFilters()+taskCards(filters(state.tasks),'tasks/');}
@@ -174,33 +217,35 @@ function payrollRows(s){
 function salaryView(){
  const s=state.payroll[0];if(!s)return title('Gaji')+absent('Periode tidak tersedia.');
  const b=s.bonuses.find(x=>x.key==='vfx');
- return title('Gaji',s.final?'Slip final':'Estimasi periode',periodField())+'<div class="stack">'+
+ return title('Gaji',state.workspace.name+' · '+(s.final?'Slip final':'Estimasi periode'),periodField())+'<div class="stack">'+
  (b?card('<span class="big">'+e(b.value)+' / '+e(b.target)+' poin</span><progress aria-label="Poin produksi VFX" max="'+e(b.target)+'" value="'+e(Math.min(b.value,b.target))+'"></progress><p><strong>Bonus KPI '+e(money(b.bonus))+'</strong></p>','banner'):'')+
  table(['Komponen','Nominal'],[...payrollRows(s),[s.final?'Total final':'Total sementara',money(s.total)]].map(([a,b])=>[e(a),e(b)]))+
  '<details class="panel"><summary>Rincian Shot dan Aset</summary>'+table(['Tugas','QC','Poin'],s.details.map(t=>[e(t.title),e(dateLabel(t.date)),e(t.points)]))+'</details></div>';
 }
 function attendanceView(){
- return title('Absensi Tim','Koreksi dan rekap per periode',btn('+ Catat Koreksi','resolve-form','',true))+'<div class="stack"><div class="bar">'+periodField()+'</div>'+
+ return title('Absensi Tim','Koreksi dan rekap '+state.workspace.name,btn('+ Catat Koreksi','resolve-form','',true))+'<div class="stack"><div class="bar">'+periodField()+'</div>'+
  '<h2>Pengajuan koreksi</h2>'+table(['Karyawan','Tanggal','Notes','Status','Aksi'],state.corrections.filter(c=>c.day.startsWith(period)).map(c=>[e(personName(c.person)),e(dateLabel(c.day)),e(c.note),status(c.status),c.status==='Menunggu'?btn('Tinjau','resolve-form',c.id):'–']))+
  '<h2>Riwayat absensi</h2>'+table(['Karyawan','Tanggal','Masuk','Keluar','Status'],state.attendance.map(a=>[e(personName(a.person)),e(dateLabel(a.day)),e(timeLabel(a.inAt)),e(timeLabel(a.outAt)),status(a.status)]))+'</div>';
 }
 function payrollView(){
- return title('Payroll','Gaji pokok, poin VFX, dan bonus','<div class="row">'+periodField()+btn('Ekspor Slip Final','export-payroll')+'</div>')+
+ return title('Payroll','Gaji pokok, KPI, dan bonus '+state.workspace.name,'<div class="row">'+periodField()+btn('Ekspor Slip Final','export-payroll')+'</div>')+
  table(['Karyawan','Poin VFX','Total','Status','Aksi'],state.payroll.map(s=>[e(personName(s.employeeId)),e(s.points),e(money(s.total)),s.final?status('Final'):'Draf',btn('Lihat rincian','payroll-form',s.employeeId)]));
 }
 function cashContent(fixed=''){
  const cash=state.cash.filter(t=>(t.status==='open'?t.date.slice(0,7)<=period:t.date.startsWith(period))&&(!(fixed||cashProject)||t.projectId===(fixed||cashProject))&&(!cashCategory||t.category===cashCategory));
- const sum=(type,status)=>cash.filter(t=>t.type===type&&t.status===status).reduce((v,t)=>v+t.amount,0);
- const incoming=sum('in','paid'),outgoing=sum('out','paid');
+ const {incoming,outgoing,open,net}=cashTotals(cash,period);
  return '<div class="bar">'+periodField()+(fixed?'':select('Proyek','project',[['','Semua proyek'],...projectOptions()],cashProject,'data-filter="cashProject"'))+
  select('Kategori','category',[['','Semua kategori'],...state.categories.map(v=>[v,v])],cashCategory,'data-filter="cashCategory"')+
  select('Status','cashStatus',[['','Semua status'],['paid','Sudah dibayar'],['open','Tagihan terbuka']],cashStatus,'data-filter="cashStatus"')+'</div>'+
- '<div class="metrics">'+metric('Uang masuk',money(incoming))+metric('Uang keluar',money(outgoing))+metric('Arus kas bersih',money(incoming-outgoing))+metric('Tagihan terbuka',money(sum('in','open')))+'</div>'+
+ '<div class="metrics">'+metric('Uang masuk',money(incoming))+metric('Uang keluar',money(outgoing))+metric('Arus kas bersih',money(net))+metric('Tagihan terbuka',money(open))+'</div>'+
  '<div class="stack">'+table(['Tanggal','Uraian','Proyek','Nominal','Status','Notes'],cash.filter(t=>!cashStatus||t.status===cashStatus).sort((a,b)=>b.date.localeCompare(a.date)).map(t=>[
  e(dateLabel(t.status==='open'?(t.due||t.date):t.date)),btn(t.title,'cash-form',t.id),e(projectName(t.projectId)),e(money(t.amount)),status(t.status==='open'?'Belum dibayar':t.type==='in'?'Diterima':'Dibayar'),e(t.notes)+(t.link?'<small>'+external(t.link,'Lihat bukti')+'</small>':'')]))+
  '<div class="row">'+btn('Kelola Kategori','category-form')+btn('Ekspor CSV','export-cash',fixed)+'</div></div>';
 }
-function financeView(){return title('Keuangan','Transaksi dan tagihan studio',btn('+ Catat Transaksi','cash-form','',true))+cashContent();}
+function financeView(){
+ const summary=state.ownerFinance.length>1?'<details class="panel"><summary>Ringkasan semua entitas</summary>'+table(['Bisnis','Uang masuk','Uang keluar','Arus kas bersih','Tagihan terbuka'],state.ownerFinance.map(t=>[e(t.name),e(money(t.incoming)),e(money(t.outgoing)),e(money(t.net)),e(money(t.open))]))+'</details>':'';
+ return title('Keuangan','Transaksi dan tagihan '+state.workspace.name,btn('+ Catat Transaksi','cash-form','',true))+'<div class="stack">'+summary+'<div>'+cashContent()+'</div></div>';
+}
 function kpiView(){
  const rule=state.rules.find(r=>r.id===selectedRule)??[...state.rules].sort((a,b)=>b.from.localeCompare(a.from))[0];
  return title('Pengaturan KPI','Aturan disimpan berdasarkan bulan mulai berlaku.',btn('+ Tambah KPI','rule-form','',true))+
@@ -209,13 +254,13 @@ function kpiView(){
  table(['Ambang','Bonus'],[[(Math.ceil(rule.target*rule.threshold/100))+' poin',money(rule.partial)],[rule.target+' poin',money(rule.full)]].map(row=>row.map(e)))+'</div>'):'')+'</div>';
 }
 function teamView(){
- return title('Akses Tim','Batasi data menurut akun dan peran',btn('+ Tambah Akun','member-form','',true))+
+ return title('Akses Tim','Kelola peran dan izin di '+state.workspace.name,btn('+ Tambah Akun','member-form','',true))+
  '<div class="stack">'+card('<div class="row between"><div><h2>Kalender dan bonus</h2><p class="muted">Clock in dari mana saja · Catatan salat '+(state.settings.prayerScope==='calendar'?'per hari kalender':'per hari kerja')+'</p></div>'+btn('Atur kalender','settings-form')+'</div>')+
  table(['Nama','Email','Peran','Status','Aksi'],state.people.map(p=>[e(p.name),e(p.email),e(labels[p.role]),e(p.active?'Aktif':'Nonaktif'),p.role==='owner'?'–':btn('Edit akses','member-form',p.id)]))+'</div>';
 }
 
 function form(title,action,fields,convert,submitLabel='Simpan'){
- modal.innerHTML='<header><h2 id="dialog-title">'+e(title)+'</h2><button aria-label="Tutup" type="button" data-action="close">Tutup</button></header><form><div class="fields">'+fields+'</div><p id="dialog-error" role="alert"></p><div class="row"><button type="submit" class="primary">'+e(submitLabel)+'</button><button type="button" data-action="close">Batal</button></div></form>';
+ modal.innerHTML='<header><div><h2 id="dialog-title">'+e(title)+'</h2><small>'+e(state.workspace.name)+'</small></div><button aria-label="Tutup" type="button" data-action="close">Tutup</button></header><form><div class="fields">'+fields+'</div><p id="dialog-error" role="alert"></p><div class="row"><button type="submit" class="primary">'+e(submitLabel)+'</button><button type="button" data-action="close">Batal</button></div></form>';
  const formEl=modal.querySelector('form');
  formEl.addEventListener('submit',event=>{
   event.preventDefault();const values=new FormData(formEl);
@@ -227,7 +272,7 @@ function form(title,action,fields,convert,submitLabel='Simpan'){
 const required='required', maxText='maxlength="1500"', onlyUrl='maxlength="1600" placeholder="https://"';
 function projectForm(p){
  form(p?'Edit Proyek':'Buat Proyek','project.save',input('Nama proyek','name',p?.name,'text','required maxlength="120"')+
- select('Jenis','type',types.map(v=>[v,v]),p?.type)+input('Link materi','material',p?.material,'url',onlyUrl)+
+ select('Jenis','type',[...new Set([...state.workspace.projectTypes,...(p?[p.type]:[])])].map(v=>[v,v]),p?.type)+input('Link materi','material',p?.material,'url',onlyUrl)+
  (p?check('Arsipkan proyek','archived',p.archived):'')+textarea('Notes','notes',p?.notes,'maxlength="1000"'),
  v=>({...v,id:p?.id,archived:!!v.archived}));
 }
@@ -242,7 +287,7 @@ function taskForm(t,projectId){
  input('Deadline','deadline',t?.deadline??state.today,'date',required)+select('Status','status',statusesForEdit.map(v=>[v,v]),t?.status)+
  select('Jenis VFX','kind',[['shot','Shot'],['asset','Aset']],t?.kind)+
  select('Bobot aset','points',[[3,'3 poin'],[5,'5 poin'],[10,'10 poin']],t?.points??5)+
- input('Link materi','material',t?.material,'url',onlyUrl)+textarea('Checklist (satu butir per baris)','checklist',t?.checklist??({VFX:'QC Internal\nFrame.io\nDPX',Wedding:'Draft\nRevisi\nFinal Delivery',Konten:'Draft\nReview\nFinal Delivery'}[state.projects.find(p=>p.id===projectId)?.type]??''),'maxlength="1000"')+
+ input('Link materi','material',t?.material,'url',onlyUrl)+textarea('Checklist (satu butir per baris)','checklist',t?.checklist??({VFX:'QC Internal\nFrame.io\nDPX',Wedding:'Draft\nRevisi\nFinal Delivery',Prewedding:'Pilihan footage\nReview\nFinal Delivery',Dokumenter:'Susun footage\nReview\nMaster final',Motion:'Brief\nRevisi\nFinal',Iklan:'Brief\nReview klien\nFinal',Konten:'Draft\nReview\nFinal Delivery'}[state.projects.find(p=>p.id===projectId)?.type]??''),'maxlength="1000"')+
  textarea('Notes','notes',t?.notes,maxText),v=>({...v,id:t?.id}));
  const toggle=()=>{
   const isVfx=state.projects.find(p=>p.id===el.elements.projectId.value)?.type==='VFX';
@@ -339,7 +384,7 @@ function csv(rows,name){
  const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 const actions={
- retry:()=>refresh(),
+ retry:()=>mode?refresh():start(),
  close:()=>modal.close(),
  'toggle-archives':()=>{showArchived=!showArchived;render();},
  'project-tab':id=>{projectTab=id;render();},
@@ -390,10 +435,12 @@ const filterUpdates={taskStatus:v=>taskStatus=v,taskType:v=>taskType=v,taskPic:v
 root.addEventListener('change',event=>{
  const key=event.target.dataset.filter,value=event.target.value;
  if(event.target.dataset.checklist){const checked=event.target.checked;event.target.checked=!checked;mutate('task.checklist',{id:event.target.dataset.checklist,item:value,checked});return;}
- if(key==='demoUser'){
+ if(key==='workspace'){
+  if(busy){event.target.value=activeWorkspace;return;}
+  activeWorkspace=value;switchContext();
+ }else if(key==='demoUser'){
   if(busy){event.target.value=demoUser;return;}
-  demoUser=value;selectedProject='';projectTab='tasks';searchText='';taskPic='';taskType='';taskStatus='';period=dayOf(new Date()).slice(0,7);state=calculate();
-  history.replaceState(null,'','#'+home());render(true);
+  demoUser=value;switchContext();
  }else if(key==='period'&&/^\d{4}-(0[1-9]|1[0-2])$/.test(value)){period=value;refresh();}
  else if(key!=='search'&&filterUpdates[key]){filterUpdates[key](value);render();}
 });
@@ -415,7 +462,10 @@ modal.addEventListener('cancel',event=>{if(busy)event.preventDefault();});
 async function start(){
  try{
   ({mode}=await remote('/api/config'));
-  if(mode==='demo'){try{db=JSON.parse(sessionStorage.getItem('bstudio-demo-v1'))??sample();if(!db.people.some(p=>p.id==='numan'))db=sample();}catch{db=sample();}}
+  if(mode==='demo'){
+   try{const saved=JSON.parse(sessionStorage.getItem('bstudio-demo-v2'));const legacy=JSON.parse(sessionStorage.getItem('bstudio-demo-v1'));db=saved?.entities?saved:demoWorkspaceState(new Date(),legacy?.people?legacy:null);}
+   catch{db=demoWorkspaceState();}
+  }
   await refresh();
  }catch(err){failure(err);}
 }

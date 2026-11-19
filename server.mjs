@@ -1,5 +1,6 @@
 
-import { AppError,apply,scope,fresh,dayOf,requestedPeriod } from './public/domain.mjs';
+import { AppError,apply,dayOf,requestedPeriod } from './public/domain.mjs';
+import { workspaceState,memberships,selectWorkspace,workspaceView,assertWorkspaceProjectType } from './public/workspaces.mjs';
 export const protectedHeaders={
  'content-security-policy':"default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; object-src 'none'; form-action 'self'; frame-ancestors 'self' https://chatgpt.com https://*.chatgpt.com",
  'referrer-policy':'no-referrer','x-content-type-options':'nosniff','permissions-policy':'camera=(), microphone=(), geolocation=()','cache-control':'no-store'
@@ -50,14 +51,18 @@ export async function endpoint(request,env){
    if(!command||typeof command.action!=='string'||!command.data||typeof command.data!=='object'||Array.isArray(command.data))throw new AppError('Format aksi tidak valid.');
   }else if(url.pathname!=='/api/state'||request.method!=='GET')return json({error:'Metode tidak diizinkan.'},405);
   for(let attempt=0;attempt<4;attempt++){
-   const snapshot=await getState(env.DB), state=snapshot?.state??fresh('workspace-owner',env.OWNER_EMAIL.toLowerCase().trim());
-   const member=state.people.find(p=>p.active&&(p.boundIdentity===identity||!p.boundIdentity&&p.email===email));
-   if(!member)return json({error:'Owner belum memberi akun ini akses.'},403);
-   const bind=!member.boundIdentity;
+   const snapshot=await getState(env.DB);
+   const state=workspaceState(snapshot?.state,'workspace-owner',env.OWNER_EMAIL.toLowerCase().trim());
+   const access=memberships(state,people=>people.find(p=>p.active&&p.boundIdentity===identity)??people.find(p=>p.active&&!p.boundIdentity&&p.email===email));
+   const current=selectWorkspace(access,url.searchParams.get('workspace'));
+   const member=current.member, bind=!member.boundIdentity;
    if(bind)member.boundIdentity=identity;
-   if(command)apply(state,member.id,command.action,command.data,now);
+   if(command){
+    assertWorkspaceProjectType(current,command.action,command.data);
+    apply(current.store,member.id,command.action,command.data,now);
+   }
    if(command||bind){if(!await commit(env.DB,snapshot?.version,state))continue;}
-   return json(scope(state,member.id,period,today));
+   return json(workspaceView(access,current,period,today));
   }
   return json({error:'Data sedang berubah. Coba lagi.'},409);
  }catch(error){

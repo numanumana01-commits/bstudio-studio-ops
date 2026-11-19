@@ -1,6 +1,6 @@
 
 export const statuses = ['Dikerjakan','Menunggu Materi','Siap Review','Revisi','Lolos QC','Terkirim'];
-export const types = ['VFX','Konten','Wedding'];
+export const types = ['VFX','Konten','Wedding','Iklan','Motion','Prewedding','Dokumenter'];
 export const roles = ['owner','production','payroll','finance','employee','viewer'];
 export const monthOf = date => new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Jakarta',year:'numeric',month:'2-digit',day:'2-digit'}).format(date).slice(0,7);
 export const dayOf = date => new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Jakarta',year:'numeric',month:'2-digit',day:'2-digit'}).format(date);

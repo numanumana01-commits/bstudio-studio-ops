@@ -15,9 +15,13 @@ Gunakan Node.js 24. Jalankan `npm test`, `npm run build`, lalu `npm start`. Prev
 5. Tentukan jadwal pencadangan D1 dan uji pemulihan di lingkungan uji. Ekspor CSV membantu rekap keuangan dan slip final. File ekspor memuat data sesuai hak akun yang mengekspor.
 6. Deploy perubahan melalui versi sumber. Uji perubahan skema pada salinan data, jalankan pengujian, dan periksa izin lagi sebelum rilis.
 
+## Workspace
+
+Satu akun dapat mempunyai peran berbeda di Bstudio, Matte Magic, dan Omera.Cinema. Transaksi, proyek, absensi, KPI, dan slip diproses dalam workspace yang dipilih. Saat data versi lama dibuka, rekamannya tetap berada di Bstudio. Workspace baru mulai kosong untuk akun operasional. Mode demo memuat contoh terpisah dan tidak menulis ke database operasional.
+
 ## Penyimpanan pilot
 
-Penyimpanan studio memakai versi snapshot dan transaksi atomik. Poin QC dicatat sekali, slip final membekukan perhitungan, dan transaksi terbuka tidak ikut kas. Snapshot dibagi ke baris kecil pada D1. Batas aplikasi 3 juta karakter per studio, dengan batas 1.000 entri riwayat di aplikasi. Migrasikan ke tabel per entitas sebelum beban kerja atau retensi audit melebihi cakupan pilot. Pantau kuota hosting dan database.
+Penyimpanan studio memakai versi snapshot dan transaksi atomik. Poin QC dicatat sekali, slip final membekukan perhitungan, dan transaksi terbuka tidak ikut kas. Snapshot dibagi ke baris kecil pada D1. Batas aplikasi 3 juta karakter untuk snapshot seluruh workspace, dengan batas 1.000 entri riwayat di aplikasi. Migrasikan ke tabel per entitas sebelum beban kerja atau retensi audit melebihi cakupan pilot. Pantau kuota hosting dan database.
 
 ## Acuan
 
