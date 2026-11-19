@@ -1,4 +1,5 @@
 
+import { dayOf } from './domain.mjs';
 import { sample } from './seed.mjs';
 import { workspaceState } from './workspaces.mjs';
 
@@ -28,5 +29,23 @@ export function demoWorkspaceState(now=new Date(), legacy=null) {
     entity.cash=[{...receipt,id:'dp-'+id,projectId:project,amount:id==='matte-magic'?6500000:4500000,notes:'DP contoh untuk workspace ini.'}];
     entity.slips=[{...seed.slips[0],base,points:0,bonuses:[],attendance:0,prayer:0,total:base}];
   }
+  const today=dayOf(now);
+  const omera=entities['omera-cinema'];
+  const project=omera.projects[0];
+  if(project){
+    project.event={client:'Contoh Pasangan',shoot:today,due:'',location:'Bandung',stage:'Persiapan',delivery:''};
+    project.crew=[
+      {id:'wedding-crew-photo',name:'Rini',position:'Photographer',duties:'Dokumentasi akad, potret keluarga, dan kurasi foto.'},
+      {id:'wedding-crew-video',name:'Ari',position:'Videographer',duties:'Liputan video akad dan resepsi.'}
+    ];
+  }
+  const magic=entities['magic-post'];
+  magic.people=seed.people.filter(p=>['numan','raka'].includes(p.id));
+  const base={campaign:'Portofolio Studio',priority:'Normal',due:today,publish:'',assignee:'raka',brief:'',caption:'',draft:'',final:'',reviewNote:'',checklist:'',checked:[],archived:false};
+  magic.content=[
+    {...base,id:'behind-the-scenes',title:'Behind the scenes produksi',channel:'Instagram',format:'Reels',stage:'Review',brief:'Potong footage BTS menjadi video 30 detik.',checklist:'Pilih footage\nEdit rough cut\nCek caption',checked:['Pilih footage','Edit rough cut']},
+    {...base,id:'showreel-teaser',title:'Teaser showreel studio',channel:'TikTok',format:'Video pendek',stage:'Terjadwal',publish:today},
+    {...base,id:'project-recap',title:'Recap proyek terbaru',channel:'Instagram',format:'Carousel',stage:'Ide'}
+  ];
   return db;
 }

@@ -1,6 +1,9 @@
 
 export const statuses = ['Dikerjakan','Menunggu Materi','Siap Review','Revisi','Lolos QC','Terkirim'];
 export const types = ['VFX','Konten','Wedding','Iklan','Motion','Prewedding','Dokumenter'];
+export const contentStages = ['Ide','Direncanakan','Produksi','Review','Revisi','Disetujui','Terjadwal','Terbit','Ditunda'];
+export const contentPriorities = ['Rendah','Normal','Tinggi','Mendesak'];
+export const eventStages = ['Persiapan','Shoot','Editing','Review','Terkirim'];
 export const roles = ['owner','production','payroll','finance','employee','viewer'];
 export const monthOf = date => new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Jakarta',year:'numeric',month:'2-digit',day:'2-digit'}).format(date).slice(0,7);
 export const dayOf = date => new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Jakarta',year:'numeric',month:'2-digit',day:'2-digit'}).format(date);
@@ -19,6 +22,7 @@ function dateOf(value){
   requireThat(/^\d{4}-\d{2}-\d{2}$/.test(s)&&!Number.isNaN(Date.parse(s))&&new Date(s).toISOString().slice(0,10)===s,'Tanggal tidak valid.');
   return s;
 }
+const optionalDate=value=>value ? dateOf(value) : '';
 function month(value){const s=required(value,7);requireThat(/^\d{4}-(0[1-9]|1[0-2])$/.test(s),'Periode tidak valid.');return s;}
 export function safeLink(value){
   try{const url=new URL(value);return url.protocol==='https:'&&!url.username&&!url.password?url.href:'';}catch{return '';}
@@ -111,8 +115,56 @@ export function apply(store,id,action,data,now=new Date()){
       requireThat(types.includes(data.type),'Pilih jenis proyek.');
       requireThat(!old||old.type===data.type||!store.tasks.some(t=>t.projectId===old.id),'Pindahkan tugas sebelum mengubah jenis proyek.');
       const row={id:old?.id??uid(),name:required(data.name),type:data.type,notes:text(data.notes,1000),material:link(data.material),archived:!!data.archived};
+      if(old?.crew)row.crew=old.crew;
+      if(data.event){
+        requireThat(eventStages.includes(data.event.stage),'Pilih status produksi.');
+        row.event={client:text(data.event.client,120),shoot:optionalDate(data.event.shoot),due:optionalDate(data.event.due),location:text(data.event.location,160),stage:data.event.stage,delivery:link(data.event.delivery)};
+      }else if(old?.event)row.event=old.event;
       upsert(store.projects,row,store.projects.indexOf(old));
       audit('production',(old?'Memperbarui ':'Membuat ') +row.name,row.id);break;
+    }
+    case 'crew.save':
+    case 'crew.remove': {
+      allow('owner','production');
+      const p=get(store.projects,data.projectId);
+      requireThat(!p.archived,'Proyek sudah diarsipkan.');
+      const crew=p.crew??=[];
+      const old=data.id?get(crew,data.id):null;
+      if(action==='crew.remove'){
+        requireThat(old,'Kru tidak ditemukan.',404);
+        crew.splice(crew.indexOf(old),1);
+      }else{
+        requireThat(old||crew.length<100,'Maksimal 100 penugasan kru per proyek.');
+        upsert(crew,{id:old?.id??uid(),name:required(data.name),position:required(data.position,80),duties:required(data.duties,500)},crew.indexOf(old));
+      }
+      audit('production',action==='crew.remove'?'Menghapus penugasan kru':'Memperbarui penugasan kru',p.id);
+      break;
+    }
+    case 'content.save': {
+      allow('owner','production','employee');
+      const items=store.content??=[];
+      const old=data.id?get(items,data.id):null;
+      if(role==='employee'){
+        requireThat(old?.assignee===id&&!old.archived,'Akses ditolak.',403);
+        requireThat(['Ide','Direncanakan','Produksi','Revisi','Review'].includes(old.stage),'Konten ini sudah dikunci untuk review atau publikasi.');
+        requireThat(['Produksi','Review',old.stage].includes(data.stage),'Pilih Produksi atau Review.');
+        data={...old,stage:data.stage,draft:data.draft,caption:data.caption,checklist:old.checklist,checked:data.checked,reviewNote:old.reviewNote};
+      }
+      if(data.assignee){
+        const assignee=get(store.people,data.assignee);
+        requireThat(assignee.active||old?.assignee===assignee.id,'Pilih PIC aktif.');
+      }
+      requireThat(contentStages.includes(data.stage),'Pilih status konten.');
+      requireThat(contentPriorities.includes(data.priority),'Pilih prioritas konten.');
+      const publish=optionalDate(data.publish);
+      requireThat(!['Terjadwal','Terbit'].includes(data.stage)||publish,'Isi tanggal tayang.');
+      const final=link(data.final);
+      const checklist=text(data.checklist,900).split('\n').map(v=>v.trim()).filter(Boolean);
+      const checked=new Set(Array.isArray(data.checked)?data.checked:[]);
+      const row={id:old?.id??uid(),title:required(data.title,160),campaign:text(data.campaign,120),channel:required(data.channel,60),format:required(data.format,60),assignee:text(data.assignee,120),stage:data.stage,priority:data.priority,due:optionalDate(data.due),publish,brief:text(data.brief,1800),caption:text(data.caption,2400),draft:link(data.draft),final,reviewNote:text(data.reviewNote,1000),checklist:[...new Set(checklist)].join('\n'),checked:[...new Set(checklist)].filter(item=>checked.has(item)),archived:!!data.archived};
+      upsert(items,row,items.indexOf(old));
+      audit('production',(old?'Memperbarui konten ':'Membuat konten ')+row.title);
+      break;
     }
     case 'task.save': {
       allow('owner','production');

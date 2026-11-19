@@ -1,10 +1,10 @@
 
-import {apply,dayOf,money,safeLink,statuses,roles} from './domain.mjs';
+import {apply,dayOf,money,safeLink,statuses,roles,contentStages,contentPriorities,eventStages} from './domain.mjs';
 import {demoWorkspaceState} from './seed-workspaces.mjs';
-import {memberships,selectWorkspace,workspaceView,assertWorkspaceProjectType,cashTotals} from './workspaces.mjs';
+import {memberships,selectWorkspace,workspaceView,assertWorkspaceProjectType,cashTotals,workspaceState} from './workspaces.mjs';
 const root=document.querySelector('#app'), modal=document.querySelector('#dialog'), notice=document.querySelector('#notice');
 const labels={owner:'Owner',production:'Admin Produksi',payroll:'Admin Payroll',finance:'Admin Keuangan',employee:'Karyawan',viewer:'Viewer'};
-const allNav={today:'Hari Ini',tasks:'Tugas Saya',clock:'Absensi',salary:'Gaji',projects:'Proyek',review:'Antrean Review',attendance:'Absensi',payroll:'Payroll',finance:'Keuangan',kpi:'Pengaturan KPI',team:'Akses Tim'};
+const allNav={content:'Konten',today:'Hari Ini',tasks:'Tugas Saya',clock:'Absensi',salary:'Gaji',projects:'Proyek',review:'Antrean Review',attendance:'Absensi',payroll:'Payroll',finance:'Keuangan',kpi:'Pengaturan KPI',team:'Akses Tim'};
 const navFor={owner:['projects','review','attendance','payroll','finance','kpi','team'],production:['projects','review'],payroll:['attendance','payroll','kpi'],finance:['finance'],employee:['today','tasks','clock','salary'],viewer:['projects']};
 const metricNames={vfx:'Poin VFX lolos QC','on-time':'Jumlah tugas lolos QC tepat waktu',completed:'Jumlah tugas lolos QC'};
 let activeWorkspace=new URLSearchParams(location.search).get('workspace')??'';
@@ -38,7 +38,13 @@ const producer=()=>['owner','production'].includes(role());
 const projectOptions=()=>state.projects.map(p=>[p.id,p.name]);
 const periodField=()=>input('Periode','period',period,'month','data-filter="period"');
 const route=()=>location.hash.slice(1).split('/').map(v=>{try{return decodeURIComponent(v)}catch{return ''}});
-const home=()=>navFor[role()][0];
+const navigation=()=>{
+ const standard=navFor[role()];
+ if(activeWorkspace==='magic-post'&&['owner','production','employee'].includes(role()))return ['content',...standard.filter(key=>!['today','tasks','projects','review','kpi'].includes(key))];
+ if(activeWorkspace==='omera-cinema')return standard.filter(key=>key!=='kpi');
+ return standard;
+};
+const home=()=>navigation()[0];
 function tell(msg){notice.textContent=msg;clearTimeout(toastTimer);toastTimer=setTimeout(()=>notice.textContent='',5500);}
 async function remote(path,init){
  const response=await fetch(path,init);const value=await response.json();
@@ -56,6 +62,7 @@ function rememberWorkspace(id,resetRoute){
 function clearWorkspaceFilters(){
  selectedProject='';selectedReview='';projectTab='tasks';searchText='';taskPic='';taskType='';taskStatus='';
  cashProject='';cashCategory='';cashStatus='';showArchived=false;selectedRule='';
+ contentMode='list';contentMonth='';contentChannel='';contentAssignee='';contentCampaign='';contentStage='';contentArchived=false;
 }
 const demoAccess=()=>memberships(db,people=>people.find(p=>p.id===demoUser&&p.active));
 const calculate=()=>{
@@ -116,10 +123,10 @@ async function mutate(action,data){
 }
 function render(focus=false){
  const [screen,id]=route();
- const visible=navFor[role()];
+ const visible=navigation();
  const key=visible.includes(screen)?screen:home();
  const nav=className=>'<nav class="'+className+'" aria-label="Navigasi utama">'+visible.map(v=>'<a href="#'+v+'"'+(key===v?' aria-current="page"':'')+'>'+e(allNav[v])+'</a>').join('')+'</nav>';
- const views={today:todayView,tasks:()=>id?taskView(id):tasksView(),clock:clockView,salary:salaryView,projects:()=>id==='task'?taskView(route()[2]):projectsView(id),review:reviewView,attendance:attendanceView,payroll:payrollView,finance:financeView,kpi:kpiView,team:teamView};
+ const views={content:()=>contentView(id),today:todayView,tasks:()=>id?taskView(id):tasksView(),clock:clockView,salary:salaryView,projects:()=>id==='task'?taskView(route()[2]):projectsView(id),review:reviewView,attendance:attendanceView,payroll:payrollView,finance:financeView,kpi:kpiView,team:teamView};
  const workspacePicker='<label class="workspace-picker"><span>Entitas</span><select aria-label="Pilih entitas bisnis" data-filter="workspace">'+state.workspaces.map(w=>option(w.id,w.name,activeWorkspace)).join('')+'</select></label>';
  const roleSelect=mode==='demo'?'<span class="demo">Preview</span><select aria-label="Ganti akun contoh" data-filter="demoUser">'+db.entities[activeWorkspace].people.filter(p=>p.active).map(p=>option(p.id,p.name+' / '+labels[p.role],demoUser)).join('')+'</select>':'<span class="role-name">'+e(state.actor.name)+' / '+e(labels[role()])+'</span><a href="/signout-with-chatgpt?return_to=%2F" target="_top">Keluar</a>';
  root.innerHTML='<div class="layout" data-workspace="'+e(activeWorkspace)+'"><aside class="rail"><div class="desktop-workspace">'+workspacePicker+'</div>'+nav('rail-nav')+(mode==='demo'?'<div class="foot">Data contoh</div>':'')+'</aside><div><header class="top"><div class="mobile-workspace">'+workspacePicker+'</div><span class="location">'+e(state.workspace.name+' / '+allNav[key])+'</span><div class="user">'+roleSelect+'</div></header><main id="content" tabindex="-1">'+views[key]()+'</main>'+nav('bottom')+'</div></div>';
@@ -166,14 +173,118 @@ function taskView(id){
  (own&&!['Lolos QC','Terkirim'].includes(t.status)?'<div class="row">'+(t.status!=='Siap Review'?btn('Kirim Review','submit-form',id,true):'')+btn('Laporkan Kendala','issue-form',id)+'</div>':'')+
  (producer()&&t.status==='Siap Review'?btn('Review Preview','open-review',id,true):''))+'</div>';
 }
+
+let contentMode='list', contentMonth='', contentChannel='', contentAssignee='', contentCampaign='', contentStage='', contentArchived=false;
+const choices=values=>values.map(v=>[v,v]);
+const contentStatus=value=>'<span class="pill '+(value==='Terbit'||value==='Disetujui'?'green':value==='Review'||value==='Terjadwal'?'blue':value==='Revisi'||value==='Ditunda'?'amber':'')+'">'+e(value)+'</span>';
+const contentPeople=item=>state.people.filter(p=>p.active||p.id===item?.assignee);
+const contentById=id=>state.content.find(item=>item.id===id);
+const contentLink=item=>'<a href="#content/'+e(item.id)+'">'+e(item.title)+'</a>';
+function contentTile(item){
+ return '<article class="content-tile">'+contentLink(item)+'<small>'+e([item.channel,item.format,item.assignee?personName(item.assignee):'',item.publish?'Tayang '+dateLabel(item.publish):''].filter(Boolean).join(' · '))+'</small></article>';
+}
+function contentCalendar(items){
+ const month=contentMonth||state.today.slice(0,7);
+ const [year,num]=month.split('-').map(Number);
+ const blanks=(new Date(Date.UTC(year,num-1,1)).getUTCDay()+6)%7;
+ const days=new Date(Date.UTC(year,num,0)).getUTCDate();
+ const cells=Array.from({length:Math.ceil((blanks+days)/7)*7},(_,i)=>{
+  const day=i-blanks+1;
+  if(day<1||day>days)return '<div class="calendar-blank" aria-hidden="true"></div>';
+  const date=month+'-'+String(day).padStart(2,'0');
+  return '<div class="calendar-day"><div class="row between"><strong'+(date===state.today?' aria-current="date"':'')+'>'+day+'</strong>'+(producer()?btn('+','content-day',date):'')+'</div>'+items.filter(item=>item.publish===date).map(item=>'<div class="calendar-item">'+contentLink(item)+contentStatus(item.stage)+'</div>').join('')+'</div>';
+ });
+ return '<div class="bar calendar-control">'+btn('Bulan sebelumnya','content-month','-1')+'<strong>'+e(monthLabel(month))+'</strong>'+btn('Bulan berikutnya','content-month','1')+'</div><div class="calendar-scroll" tabindex="0" role="region" aria-label="Kalender tayang"><div class="content-calendar">'+['Sen','Sel','Rab','Kam','Jum','Sab','Min'].map(day=>'<strong class="calendar-label">'+day+'</strong>').join('')+cells.join('')+'</div></div>'+card('<h2>Belum ada tanggal tayang</h2>'+(items.filter(item=>!item.publish).map(contentTile).join('')||absent('Semua konten di tampilan ini sudah memiliki tanggal tayang.')));
+}
+function contentView(id){
+ if(id){
+  const item=contentById(id);
+  const back='<p class="bar"><a href="#content">‹ Semua konten</a></p>';
+  if(!item)return back+title('Konten tidak ditemukan');
+  const canEdit=producer()||['Ide','Direncanakan','Produksi','Revisi','Review'].includes(item.stage)&&!item.archived;
+  return back+title(item.title,[item.campaign,item.channel,item.format].filter(Boolean).join(' · '),canEdit?btn('Edit Konten','content-form',id,true):'')+
+   '<div class="metrics">'+metric('PIC',personName(item.assignee))+metric('Deadline produksi',dateLabel(item.due))+metric('Tanggal tayang',dateLabel(item.publish))+'</div>'+
+   '<div class="content-detail"><div class="stack">'+card('<div class="row between"><h2>Brief & caption</h2>'+contentStatus(item.stage)+'</div><p class="notes">'+e(item.brief||'Belum ada brief.')+'</p>'+(item.caption?'<h3>Caption</h3><p class="notes">'+e(item.caption)+'</p>':'')+(item.archived?'<p>Diarsipkan</p>':''))+
+   card('<h2>Review & aset</h2><p class="notes">'+e(item.reviewNote||'Belum ada feedback.')+'</p><div class="row">'+external(item.draft,'Buka draft')+external(item.final,'Buka aset final')+'</div>')+'</div>'+
+   card('<h2>Checklist produksi</h2><p>'+item.checked.length+' / '+item.checklist.split('\n').filter(Boolean).length+' selesai · Prioritas '+e(item.priority)+'</p>'+(item.checklist?'<ul>'+item.checklist.split('\n').map(part=>'<li>'+e(item.checked.includes(part)?'✓ ':'')+e(part)+'</li>').join('')+'</ul>':absent('Belum ada checklist.')))+'</div>';
+ }
+ const active=state.content.filter(item=>item.archived===contentArchived);
+ const items=active.filter(item=>(!contentChannel||item.channel===contentChannel)&&(!contentAssignee||item.assignee===contentAssignee)&&(!contentCampaign||item.campaign===contentCampaign)&&(!contentStage||item.stage===contentStage))
+  .sort((a,b)=>(a.publish||a.due||'9999').localeCompare(b.publish||b.due||'9999'));
+ const filters='<div class="bar content-filters">'+select('Channel','channel',[['','Semua channel'],...choices([...new Set(active.map(item=>item.channel))].sort())],contentChannel,'data-filter="contentChannel"')+
+  (producer()?select('PIC','assignee',[['','Semua PIC'],...contentPeople().map(p=>[p.id,p.name])],contentAssignee,'data-filter="contentAssignee"'):'')+
+  select('Campaign','campaign',[['','Semua campaign'],...choices([...new Set(active.map(item=>item.campaign).filter(Boolean))].sort())],contentCampaign,'data-filter="contentCampaign"')+
+  select('Status','stage',[['','Semua status'],...choices(contentStages)],contentStage,'data-filter="contentStage"')+'</div>';
+ const tabs='<div class="tabs">'+[['list','Daftar'],['board','Board'],['calendar','Kalender Tayang']].map(([key,label])=>'<button type="button" data-action="content-mode" data-id="'+key+'" aria-pressed="'+(contentMode===key)+'">'+label+'</button>').join('')+(producer()?btn(contentArchived?'Lihat konten aktif':'Lihat arsip','content-archive'):'')+'</div>';
+ const header=title(contentArchived?'Arsip Magic Post':'Magic Post','Produksi konten dan kalender publikasi',producer()?btn('+ Buat Konten','content-form','',true):'')+tabs+filters;
+ if(contentMode==='calendar')return header+contentCalendar(items);
+ if(contentMode==='board')return header+'<div class="content-board" tabindex="0" role="region" aria-label="Board tahapan konten">'+(contentStage?[contentStage]:contentStages).map(stage=>{
+  const group=items.filter(item=>item.stage===stage);
+  return '<section class="content-lane"><h2>'+e(stage)+' <small>'+group.length+'</small></h2>'+(group.map(contentTile).join('')||absent('Kosong'))+'</section>';
+ }).join('')+'</div>';
+ return header+table(['Konten','Channel / Format','PIC','Prioritas','Deadline','Tayang','Status'],items.map(item=>[
+  contentLink(item)+(item.campaign?'<br><small>'+e(item.campaign)+'</small>':''),e(item.channel+' / '+item.format),e(personName(item.assignee)),e(item.priority),e(dateLabel(item.due)),e(dateLabel(item.publish)),contentStatus(item.stage)
+ ]));
+}
+function contentForm(item,publish=''){
+ if(!producer()&&(!item||item.archived))return;
+ const stage=select('Status','stage',choices(producer()?contentStages:[...new Set([item.stage,'Produksi','Review'])]),item?.stage);
+ const links=input('Link draft / preview','draft',item?.draft,'url',onlyUrl);
+ const caption=textarea('Caption / copy','caption',item?.caption,'maxlength="2400"');
+ const items=item?.checklist?.split('\n').filter(Boolean)??[];
+ const checklist=items.length?'<fieldset class="wide"><legend>Checklist selesai</legend>'+items.map(part=>check(part,'done',item.checked.includes(part),part)).join('')+'</fieldset>':'';
+ const fields=producer()?input('Judul konten','title',item?.title,'text','required maxlength="160"')+
+  input('Campaign','campaign',item?.campaign,'text','maxlength="120"')+
+  input('Channel','channel',item?.channel,'text','required maxlength="60" list="content-channels"')+
+  '<datalist id="content-channels"><option>Instagram</option><option>TikTok</option><option>YouTube</option><option>Facebook</option><option>LinkedIn</option></datalist>'+
+  input('Format','format',item?.format,'text','required maxlength="60" list="content-formats"')+
+  '<datalist id="content-formats"><option>Reels</option><option>Shorts</option><option>Carousel</option><option>Story</option><option>Foto</option><option>Video panjang</option></datalist>'+
+  select('PIC','assignee',[['','Belum ditugaskan'],...contentPeople(item).map(p=>[p.id,p.name])],item?.assignee)+stage+
+  select('Prioritas','priority',choices(contentPriorities),item?.priority??'Normal')+
+  input('Deadline produksi','due',item?.due,'date')+input('Tanggal tayang','publish',item?.publish??publish,'date')+links+
+  input('Link aset final / posting','final',item?.final,'url',onlyUrl)+textarea('Brief','brief',item?.brief,'maxlength="1800"')+
+  caption+textarea('Checklist produksi (satu tugas per baris)','checklist',item?.checklist??'','maxlength="900"')+checklist+
+  textarea('Feedback review','reviewNote',item?.reviewNote,'maxlength="1000"')+(item?check('Arsipkan konten','archived',item.archived):''):stage+links+caption+checklist;
+ form(item?'Edit Konten':'Buat Konten','content.save',fields,(v,all)=>({...v,id:item?.id,archived:!!v.archived,checked:all.getAll('done')}));
+}
+
+
+const crewRoles=['Photographer','Videographer','Editor Foto','Editor Video','Drone Pilot','Audio Recordist','Lighting','Crew Assistant','Koordinator Produksi'];
+const omera=()=>activeWorkspace==='omera-cinema';
+function omeraProject(p){
+ const event=p.event??{};
+ const actions=producer()?'<div class="row">'+btn('Edit Proyek','project-form',p.id)+(!p.archived?btn('+ Tambah Kru','crew-form','',true):'')+'</div>':'';
+ const crew=p.crew??[];
+ const tasks=state.tasks.filter(task=>task.projectId===p.id);
+ return '<p class="bar"><a href="#projects">‹ Semua proyek</a></p>'+title(p.name,[p.type,event.client,p.archived?'Arsip':''].filter(Boolean).join(' · '),actions)+
+  '<div class="metrics event-metrics">'+metric('Status produksi',event.stage||'Persiapan')+metric('Tanggal shoot',dateLabel(event.shoot))+metric('Target kirim',dateLabel(event.due))+metric('Lokasi',event.location||'–')+'</div>'+
+  '<div class="stack">'+card('<h2>Kru & jobdesk</h2>'+(crew.length?table(['Nama kru','Peran','Tanggung jawab',...(producer()&&!p.archived?['Tindakan']:[])],crew.map(item=>[
+   e(item.name),e(item.position),'<span class="notes">'+e(item.duties)+'</span>',...(producer()&&!p.archived?[btn('Edit','crew-form',item.id)]:[])
+  ])):absent('Belum ada kru untuk proyek ini.')))+
+  card('<h2>Materi & hasil akhir</h2><p class="notes">'+e(p.notes||'Belum ada catatan proyek.')+'</p><div class="row">'+external(p.material,'Buka materi')+external(event.delivery,'Buka hasil akhir')+'</div>')+
+  card('<details'+(route().length>2?' open':'')+'><summary><strong>Tugas produksi ('+tasks.length+')</strong></summary>'+
+   (producer()&&!p.archived?'<div class="bar">'+btn('+ Buat Tugas','task-new',p.id)+'</div>':'')+taskCards(tasks,'projects/task/')+'</details>')+'</div>';
+}
+function crewForm(p,item){
+ if(!p||!producer()||p.archived)return;
+ const options='<datalist id="crew-positions">'+crewRoles.map(role=>'<option value="'+e(role)+'"></option>').join('')+'</datalist>';
+ const dialogForm=form(item?'Edit Penugasan Kru':'Tambah Kru','crew.save',
+  input('Nama kru','name',item?.name,'text','required maxlength="120"')+
+  input('Peran','position',item?.position,'text','required maxlength="80" list="crew-positions"')+options+
+  textarea('Jobdesk','duties',item?.duties,'required maxlength="500" placeholder="Contoh: dokumentasi akad dan foto keluarga"'),
+  v=>({...v,id:item?.id,projectId:p.id}));
+ if(item)dialogForm.querySelector('.row').insertAdjacentHTML('beforeend',btn('Hapus Penugasan','crew-remove',item.id));
+}
+
 function projectsView(id){
  const p=state.projects.find(v=>v.id===id);
+ if(p&&omera()&&producer())return omeraProject(p);
  if(id&&!p)return title('Proyek tidak ditemukan')+absent('Proyek ini tidak tersedia untuk akunmu.');
  if(!p){
   const projects=state.projects.filter(v=>v.archived===showArchived);
-  return title('Proyek','Daftar pekerjaan produksi studio',producer()?btn('+ Buat Proyek','project-form','',true):'')+
+  return title('Proyek',omera()?'Wedding, prewedding, dan dokumenter':'Daftar pekerjaan produksi studio',producer()?btn('+ Buat Proyek','project-form','',true):'')+
    (producer()?'<div class="tabs">'+btn(showArchived?'Lihat proyek aktif':'Lihat arsip','toggle-archives')+'</div>':'')+
-   (projects.length?'<div class="metrics">'+projects.map(p=>'<a class="panel cardlink" href="#projects/'+e(p.id)+'"><div class="row between"><strong>'+e(p.name)+'</strong><span class="pill">'+e(p.type)+'</span></div><small>'+state.tasks.filter(t=>t.projectId===p.id).length+' tugas</small></a>').join('')+'</div>':absent('Belum ada proyek.'));
+   (projects.length?'<div class="metrics">'+projects.map(p=>'<a class="panel cardlink" href="#projects/'+e(p.id)+'"><div class="row between"><strong>'+e(p.name)+'</strong><span class="pill">'+e(p.type)+'</span></div><small>'+e(omera()&&producer()?[p.event?.stage||'Persiapan',p.event?.shoot?'Shoot '+dateLabel(p.event.shoot):'',(p.crew?.length??0)+' kru'].filter(Boolean).join(' · '):state.tasks.filter(t=>t.projectId===p.id).length+' tugas')+'</small></a>').join('')+'</div>':absent('Belum ada proyek.'));
  }
  const list=state.tasks.filter(t=>t.projectId===p.id);
  const tabs=producer()?'<div class="tabs">'+['tasks','activity',...(['owner','finance'].includes(role())?['finance']:[])].map(k=>'<button type="button" data-action="project-tab" data-id="'+k+'"'+(k===projectTab?' aria-current="page"':'')+'>'+({tasks:'Tugas',activity:'Aktivitas',finance:'Keuangan'}[k])+'</button>').join('')+'</div>':'';
@@ -271,10 +382,15 @@ function form(title,action,fields,convert,submitLabel='Simpan'){
 }
 const required='required', maxText='maxlength="1500"', onlyUrl='maxlength="1600" placeholder="https://"';
 function projectForm(p){
+ const event=p?.event??{};
+ const eventFields=omera()?input('Klien / pasangan','client',event.client,'text','maxlength="120"')+
+  input('Lokasi','location',event.location,'text','maxlength="160"')+
+  input('Tanggal shoot','shoot',event.shoot,'date')+input('Target kirim','due',event.due,'date')+
+  select('Status produksi','stage',choices(eventStages),event.stage)+input('Link hasil akhir','delivery',event.delivery,'url',onlyUrl):'';
  form(p?'Edit Proyek':'Buat Proyek','project.save',input('Nama proyek','name',p?.name,'text','required maxlength="120"')+
  select('Jenis','type',[...new Set([...state.workspace.projectTypes,...(p?[p.type]:[])])].map(v=>[v,v]),p?.type)+input('Link materi','material',p?.material,'url',onlyUrl)+
- (p?check('Arsipkan proyek','archived',p.archived):'')+textarea('Notes','notes',p?.notes,'maxlength="1000"'),
- v=>({...v,id:p?.id,archived:!!v.archived}));
+ eventFields+(p?check('Arsipkan proyek','archived',p.archived):'')+textarea('Catatan','notes',p?.notes,'maxlength="1000"'),
+ ({client,location,shoot,due,stage,delivery,...v})=>({...v,id:p?.id,archived:!!v.archived,...(omera()?{event:{client,location,shoot,due,stage,delivery}}:{})}));
 }
 function taskForm(t,projectId){
  const pics=state.people.filter(p=>p.role==='employee'&&(p.active||p.id===t?.pic));
@@ -393,6 +509,26 @@ const actions={
  'select-rule':id=>{selectedRule=id;render();},
  clock:id=>mutate('attendance.clock',{mode:id}),
  prayer:id=>mutate('prayer.save',{mode:id}),
+ 'content-form':id=>contentForm(contentById(id)),
+ 'content-day':date=>contentForm(null,date),
+ 'content-mode':key=>{contentMode=key;render();},
+ 'content-month':delta=>{
+  const [year,num]=(contentMonth||state.today.slice(0,7)).split('-').map(Number);
+  contentMonth=new Date(Date.UTC(year,num-1+Number(delta),1)).toISOString().slice(0,7);
+  render();
+ },
+ 'content-archive':()=>{contentArchived=!contentArchived;contentChannel='';contentAssignee='';contentCampaign='';contentStage='';render();},
+ 'crew-form':id=>{
+  const p=state.projects.find(project=>project.id===route()[1]);
+  crewForm(p,p?.crew?.find(item=>item.id===id));
+ },
+ 'crew-remove':id=>{
+  const p=state.projects.find(project=>project.id===route()[1]);
+  const item=p?.crew?.find(member=>member.id===id);
+  if(!item||busy)return;
+  modal.close();
+  form('Hapus Penugasan Kru','crew.remove','<p class="wide">'+e(item.name+' · '+item.position)+'</p>',()=>({id,projectId:p.id}),'Hapus Penugasan');
+ },
  'project-form':id=>projectForm(state.projects.find(p=>p.id===id)),
  'task-new':id=>taskForm(null,id),
  'task-form':id=>taskForm(state.tasks.find(t=>t.id===id)),
@@ -431,7 +567,7 @@ document.addEventListener('click',event=>{
  if(!b||busy&&b.dataset.action!=='close')return;
  actions[b.dataset.action]?.(b.dataset.id);
 });
-const filterUpdates={taskStatus:v=>taskStatus=v,taskType:v=>taskType=v,taskPic:v=>taskPic=v,cashProject:v=>cashProject=v,cashCategory:v=>cashCategory=v,cashStatus:v=>cashStatus=v,search:v=>searchText=v};
+const filterUpdates={contentChannel:v=>contentChannel=v,contentAssignee:v=>contentAssignee=v,contentCampaign:v=>contentCampaign=v,contentStage:v=>contentStage=v,taskStatus:v=>taskStatus=v,taskType:v=>taskType=v,taskPic:v=>taskPic=v,cashProject:v=>cashProject=v,cashCategory:v=>cashCategory=v,cashStatus:v=>cashStatus=v,search:v=>searchText=v};
 root.addEventListener('change',event=>{
  const key=event.target.dataset.filter,value=event.target.value;
  if(event.target.dataset.checklist){const checked=event.target.checked;event.target.checked=!checked;mutate('task.checklist',{id:event.target.dataset.checklist,item:value,checked});return;}
@@ -463,7 +599,7 @@ async function start(){
  try{
   ({mode}=await remote('/api/config'));
   if(mode==='demo'){
-   try{const saved=JSON.parse(sessionStorage.getItem('bstudio-demo-v2'));const legacy=JSON.parse(sessionStorage.getItem('bstudio-demo-v1'));db=saved?.entities?saved:demoWorkspaceState(new Date(),legacy?.people?legacy:null);}
+   try{const saved=JSON.parse(sessionStorage.getItem('bstudio-demo-v2'));const legacy=JSON.parse(sessionStorage.getItem('bstudio-demo-v1'));db=saved?.entities?workspaceState(saved,'numan','owner@example.com'):demoWorkspaceState(new Date(),legacy?.people?legacy:null);}
    catch{db=demoWorkspaceState();}
   }
   await refresh();

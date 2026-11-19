@@ -169,7 +169,7 @@ test('Workspace membatasi proyek, biaya, peran, dan gaji untuk satu akun',async(
  assert.equal((await owner(b,'cash.save',txn)).status,404);
  assert.equal((await owner(m,'cash.save',txn)).status,200);
  const all=await (await api(env,'state?workspace='+b,'root','owner@example.com')).json();
- assert.deepEqual(all.ownerFinance.map(a=>a.incoming),[0,50000,0]);
+ assert.deepEqual(all.ownerFinance.map(a=>a.incoming),[0,50000,0,0]);
  assert.deepEqual(all.cash,[]);
  assert.equal((await owner(o,'member.save',add('finance'))).status,200);
  const finance=await (await staff(o)).json();
@@ -191,7 +191,51 @@ test('Migrasi snapshot menjaga data lama di Bstudio dan membuat workspace baru k
  assert.deepEqual(b.cash,initial.cash);
  assert.deepEqual(m.projects,[]);
  assert.deepEqual(m.payroll,[]);
- assert.deepEqual(m.workspaces.map(a=>a.id),['bstudio','matte-magic','omera-cinema']);
+ assert.deepEqual(m.workspaces.map(a=>a.id),['bstudio','matte-magic','omera-cinema','magic-post']);
  const old=await (await api(env,'state?workspace=bstudio&period=2026-10','old-owner','owner@example.com')).json();
  assert.deepEqual(old.payroll.find(p=>p.employeeId==='ari'),initial.slips[0]);
+});
+
+test('Magic Post dibuat saat membuka snapshot empat workspace yang belum lengkap dan kontennya terisolasi',async()=>{
+ const DB=memoryDb(),env={DB,OWNER_EMAIL:'owner@example.com'};
+ const original=studio();
+ await DB.batch([
+  DB.prepare('insert into studio_state(id,version) values(1,?)').bind('three-workspaces'),
+  DB.prepare('insert into studio_chunk(version,part,data) values(?,?,?)').bind('three-workspaces',0,JSON.stringify({entities:{bstudio:original,'matte-magic':original,'omera-cinema':original}}))
+ ]);
+ const owner=(workspace,action,data)=>api(env,'action?workspace='+workspace,'root','owner@example.com',{action,data});
+ const seed={title:'Reels studio',channel:'Instagram',format:'Reels',priority:'Normal',stage:'Produksi',checklist:'Edit\nQC',checked:['Edit','Other']};
+ assert.equal((await owner('bstudio','content.save',seed)).status,403);
+ assert.equal((await owner('magic-post','content.save',{...seed,stage:'Terjadwal'})).status,400);
+ const state=await (await owner('magic-post','member.save',{name:'Editor',email:'editor@example.com',role:'employee',salary:0})).json();
+ const assignee=state.people.find(p=>p.email==='editor@example.com').id;
+ const created=await (await owner('magic-post','content.save',{...seed,assignee})).json();
+ const [item]=created.content;
+ assert.deepEqual(item.checked,['Edit']);
+ const staff=(data)=>api(env,'action?workspace=magic-post','staff','editor@example.com',{action:'content.save',data});
+ assert.equal((await staff({id:item.id,stage:'Disetujui'})).status,400);
+ const updated=await (await staff({id:item.id,title:'Override',stage:'Review',draft:'https://review.example/video',checked:['Edit','QC']})).json();
+ assert.equal(updated.content[0].title,seed.title);
+ assert.equal(updated.content[0].stage,'Review');
+ assert.deepEqual(updated.content[0].checked,['Edit','QC']);
+ const b=await (await api(env,'state?workspace=bstudio','root','owner@example.com')).json();
+ assert.deepEqual(b.projects,original.projects);
+ assert.deepEqual(b.content,[]);
+});
+
+test('Omera menyimpan kru, jobdesk, dan jadwal per proyek saat proyek diedit',async()=>{
+ const env={DB:memoryDb(),OWNER_EMAIL:'owner@example.com'};
+ const send=(workspace,action,data)=>api(env,'action?workspace='+workspace,'root','owner@example.com',{action,data});
+ const project={name:'Wedding R & A',type:'Wedding',event:{stage:'Persiapan',shoot:'2026-12-12',location:'Bandung'}};
+ const created=await (await send('omera-cinema','project.save',project)).json();
+ const [{id:projectId}]=created.projects;
+ const member={projectId,name:'Rini',position:'Photographer',duties:'Foto akad dan keluarga'};
+ assert.equal((await send('matte-magic','crew.save',member)).status,403);
+ const roster=await (await send('omera-cinema','crew.save',member)).json();
+ const [{id}]=roster.projects[0].crew;
+ const edited=await (await send('omera-cinema','project.save',{...project,id:projectId,event:{...project.event,stage:'Shoot'}})).json();
+ assert.equal(edited.projects[0].event.stage,'Shoot');
+ assert.equal(edited.projects[0].crew[0].duties,member.duties);
+ const removed=await (await send('omera-cinema','crew.remove',{id,projectId})).json();
+ assert.deepEqual(removed.projects[0].crew,[]);
 });
